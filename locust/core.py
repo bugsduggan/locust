@@ -1,4 +1,5 @@
 import collections
+from inspect import signature, Signature, Parameter
 import logging
 import random
 import sys
@@ -232,6 +233,11 @@ class TaskSet(object):
     instantiated. Useful for nested TaskSet classes.
     """
 
+    return_values = dict()
+    """
+    Will refer to values returned by tasks.
+    """
+
     def __init__(self, parent):
         self._task_queue = []
         self._time_start = time()
@@ -270,8 +276,9 @@ class TaskSet(object):
                     return
         
                 if not self._task_queue:
-                    self.schedule_task(self.get_next_task())
-                
+                    next_task = self.get_next_task()
+                    args = self._get_task_arguments(next_task)
+                    self.schedule_task(next_task, args)
                 try:
                     self.execute_next_task()
                 except RescheduleTaskImmediately:
@@ -289,6 +296,8 @@ class TaskSet(object):
                 raise
             except GreenletExit:
                 raise
+            except ValueError:
+                pass
             except Exception as e:
                 events.locust_error.fire(locust_instance=self, exception=e, tb=sys.exc_info()[2])
                 if self.locust._catch_exceptions:
@@ -296,22 +305,71 @@ class TaskSet(object):
                     self.wait()
                 else:
                     raise
+
+    def store_return_value(self, ret_type, ret_val):
+        if ret_type not in self.return_values:
+            self.return_values[ret_type] = list()
+        self.return_values[ret_type].append(ret_val)
     
     def execute_next_task(self):
         task = self._task_queue.pop(0)
         self.execute_task(task["callable"], *task["args"], **task["kwargs"])
+
+    def _get_task_arguments(self, task):
+        task_sig = signature(task)
+        args = list()
+        first = True
+        for param_name, param_type in task_sig.parameters.items():
+            if param_name == 'self' and first:
+                first = False
+                continue
+            if param_type.annotation == Parameter.empty:
+                raise AttributeError('attribute "%s" has no type set for task '
+                                     '"%s"' % (param_name,
+                                               task.__name__))
+            type_name = param_type.annotation.__name__
+            args.append(self._pop_random_value(param_name, task.__name__,
+                                               type_name))
+        return args
+
+    def _pop_random_value(self, param_name, task_name, type_name):
+        if type_name not in self.return_values:
+            raise AttributeError('attribute "%s" has no available values for '
+                                 'task "%s"' % (param_name, task_name))
+        if len(self.return_values[type_name]) == 0:
+            raise ValueError('attribute "%s" has no remaining values for '
+                             'task "%s"' % (param_name, task_name))
+        random.shuffle(self.return_values[type_name])
+        return self.return_values[type_name].pop()
+
+    def _get_return_type(self, task):
+        task_signature = signature(task)
+        if task_signature.return_annotation != Signature.empty:
+            return task_signature.return_annotation.__name__
+        return None
     
     def execute_task(self, task, *args, **kwargs):
         # check if the function is a method bound to the current locust, and if so, don't pass self as first argument
+
+        ret_type = self._get_return_type(task)
+
+        ret_val = None
         if hasattr(task, "__self__") and task.__self__ == self:
             # task is a bound method on self
-            task(*args, **kwargs)
+            ret_val = task(*args, **kwargs)
         elif hasattr(task, "tasks") and issubclass(task, TaskSet):
             # task is another (nested) TaskSet class
-            task(self).run(*args, **kwargs)
+            ret_val = task(self).run(*args, **kwargs)
         else:
             # task is a function
-            task(self, *args, **kwargs)
+            ret_val = task(self, *args, **kwargs)
+
+        if ret_type is None and ret_val is not None:
+            raise TypeError('task "%s" trying to return a value other than '
+                            'NoneType but no return annotation present' %
+                            task.__name__)
+        if ret_type is not None:
+            self.store_return_value(ret_type, ret_val)
     
     def schedule_task(self, task_callable, args=None, kwargs=None, first=False):
         """
