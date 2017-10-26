@@ -1,5 +1,6 @@
 import collections
 from inspect import signature, Signature, Parameter
+from itertools import zip_longest
 import logging
 import random
 import sys
@@ -344,9 +345,21 @@ class TaskSet(object):
 
     def _get_return_type(self, task):
         task_signature = signature(task)
-        if task_signature.return_annotation != Signature.empty:
-            return task_signature.return_annotation.__name__
+        annotation = task_signature.return_annotation
+        if annotation != Signature.empty:
+            if isinstance(annotation, tuple):
+                return tuple([a.__name__ for a in annotation])
+            elif isinstance(annotation, list):
+                return [a.__name__ for a in annotation]
+            return annotation.__name__
         return None
+
+    def _ret_type_matches_val(self, ret_type, ret_val):
+        if isinstance(ret_type, tuple) and not isinstance(ret_val, tuple):
+            return False
+        if isinstance(ret_type, list) and not isinstance(ret_val, tuple):
+            return False
+        return True
     
     def execute_task(self, task, *args, **kwargs):
         # check if the function is a method bound to the current locust, and if so, don't pass self as first argument
@@ -369,7 +382,18 @@ class TaskSet(object):
                             'NoneType but no return annotation present' %
                             task.__name__)
         if ret_type is not None:
-            self.store_return_value(ret_type, ret_val)
+            if not self._ret_type_matches_val(ret_type, ret_val):
+                raise TypeError('task "%s" should have returned type "%r" but '
+                                'instead returned "%r"' % (task.__name__,
+                                                           ret_type,
+                                                           ret_val))
+            else:
+                if isinstance(ret_type, tuple) or isinstance(ret_val, list):
+                    for t, v in zip_longest(ret_type, ret_val):
+                        self.store_return_value(t, v)
+                else:
+                    self.store_return_value(ret_type, ret_val)
+        print(self.return_values)
     
     def schedule_task(self, task_callable, args=None, kwargs=None, first=False):
         """
