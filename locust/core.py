@@ -1,3 +1,4 @@
+import collections
 import logging
 import random
 import sys
@@ -141,6 +142,10 @@ class TaskSetMeta(type):
     Meta class for the main Locust class. It's used to allow Locust classes to specify task execution 
     ratio using an {task:int} dict, or a [(task0,int), ..., (taskN,int)] list.
     """
+
+    @classmethod
+    def __prepare__(self, name, bases):
+        return collections.OrderedDict()
     
     def __new__(mcs, classname, bases, classDict):
         new_tasks = []
