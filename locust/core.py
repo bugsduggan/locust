@@ -393,7 +393,6 @@ class TaskSet(object):
                         self.store_return_value(t, v)
                 else:
                     self.store_return_value(ret_type, ret_val)
-        print(self.return_values)
     
     def schedule_task(self, task_callable, args=None, kwargs=None, first=False):
         """
